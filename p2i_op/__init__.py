@@ -114,11 +114,14 @@ def p2i(points, point_features, batch_inds, background, kernel_radius, kernel_ki
     """
     kernel_kind = _kernel_kind_dict[kernel_kind_str]
     out_h, out_w = background.shape[2:]
+    
+    # change the range of points from [-1, 1] to [0, out_h - 1] and [0, out_w - 1]
     points = (
         (points + 1)
         / 2
         * torch.tensor([out_h - 1, out_w - 1], dtype=points.dtype, device=points.device).view(1, 2)
     )
+
 
     if reduce == "sum":
         return P2ISumFunction.apply(

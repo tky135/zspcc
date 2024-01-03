@@ -2,12 +2,8 @@
 # Licensed under the MIT License.
 
 # differentiable point cloud rendering
-import math
 import torch
 from p2i_op import p2i
-
-N_VIEWS_PREDEFINED = 8
-torch.cuda.empty_cache()
 
 def normalize(x, dim):
     return x / torch.max(x.norm(None, dim=dim, keepdim=True), torch.tensor(1e-6, dtype=x.dtype, device=x.device))
@@ -23,13 +19,16 @@ def look_at(eyes, centers, ups):
     Returns:
     - view_mat: float, [batch x 4 x 4]
     """
-    zaxis = normalize(eyes - centers, dim=1)  # The negative 'forward' direction of the observer
-    xaxis = normalize(torch.cross(ups, zaxis, dim=1), dim=1)  # The 'right' direction of the observer
-    yaxis = torch.cross(zaxis, xaxis, dim=1)  # The rectified 'up' direction of the observer
+    B = eyes.shape[0]
 
-    # constant placeholders
-    zeros_pl = torch.zeros([eyes.size(0)], dtype=eyes.dtype, device=eyes.device)
-    ones_pl = torch.ones([eyes.size(0)], dtype=eyes.dtype, device=eyes.device)
+    # get the directions (unit vectors) for camera x, y, z axes in the world coordinate
+    zaxis = normalize(eyes - centers, dim=1)  # The z-axis points from the object to the observer
+    xaxis = normalize(torch.cross(ups, zaxis, dim=1), dim=1)  # get the x-axis(The 'right' direction of the observer)
+    yaxis = torch.cross(zaxis, xaxis, dim=1)  # get the y-axis(The rectified 'up' direction of the observer)
+
+    # constant 0 or 1 placeholders
+    zeros_pl = torch.zeros([B], dtype=eyes.dtype, device=eyes.device)
+    ones_pl = torch.ones([B], dtype=eyes.dtype, device=eyes.device)
 
     translation = torch.stack(
         [
@@ -84,10 +83,11 @@ def look_at(eyes, centers, ups):
 
 def perspective(fovy, aspect, z_near, z_far):
     """perspective (right hand_no)
+    Simulates the way the human eye perceives the world, where objects farther away appear smaller. The matrix converges lines that are parallel in the world space to meet at a vanishing point in the image, creating a sense of depth.
     Inputs:
     - fovy: float, [batch], fov angle
-    - aspect: float, [batch], aspect ratio
-    - z_near, z_far: float, [batch], the z-clipping distances
+    - aspect: float, [batch], aspect ratio. The ratio of width to height of the viewing window or viewport.
+    - z_near, z_far: float, [batch], the z-clipping distances. These define the depth range of the scene that is visible. objects outside this range are clipped out. 
 
     Returns:
     - proj_mat: float, [batch x 4 x 4]
@@ -122,6 +122,15 @@ def perspective(fovy, aspect, z_near, z_far):
 
 
 def orthorgonal(scalex, scaley, z_near, z_far):
+    """orthorgonal
+    Parallel lines in the world space remain parallel after projection. There's no convergence to a vanishing point.
+    Inputs:
+    - scalex, scaley: These determine how the x and y dimensions are scaled in the resulting image. T
+    - z_near, z_far: float, [batch], the z-clipping distances. These define the depth range of the scene that is visible. objects outside this range are clipped out. 
+
+    Returns:
+    - proj_mat: float, [batch x 4 x 4]
+    """
     zeros_pl = torch.zeros_like(z_near)
     ones_pl = torch.ones_like(z_near)
 
@@ -161,7 +170,7 @@ def transform(matrix, points):
     """
     out = torch.cat([points, torch.ones_like(points[:, [0]], device=points.device)], dim=1).view(points.size(0), 4, 1)
     out = matrix @ out
-    out = out[:, :3, 0] / out[:, [3], 0]
+    out = out[:, :3, 0] / out[:, [3], 0]    # the extra square bracket means that the dimension is kept
     return out
 
 
@@ -184,47 +193,55 @@ class ComputeDepthMaps(torch.nn.Module):
         assert projection in {"perspective", "orthorgonal"}
         if projection == "perspective":
             self.projection_matrix = perspective(
-                fovy=torch.tensor([math.pi / 4], dtype=torch.float32),
+                fovy=torch.tensor([torch.pi / 4], dtype=torch.float32),
                 aspect=torch.tensor([1.0], dtype=torch.float32),
                 z_near=torch.tensor([0.1], dtype=torch.float32),
                 z_far=torch.tensor([10.0], dtype=torch.float32),
             )
-        else:
+        elif projection == "orthorgonal":
             self.projection_matrix = orthorgonal(
                 scalex=torch.tensor([1.5], dtype=torch.float32),
                 scaley=torch.tensor([1.5], dtype=torch.float32),
                 z_near=torch.tensor([0.1], dtype=torch.float32),
                 z_far=torch.tensor([10.0], dtype=torch.float32),
             )
+        else:
+            raise Exception("Unknown projection type")
 
-        self.pre_matrix_list = []
+        self.pre_matrix_list = []   # a list of total transformation matrices from multiple view points
         for i in range(self.num_views):
             _view_matrix = look_at(
-                eyes=torch.tensor([self.eyes_pos_list[i]], dtype=torch.float32) * eyepos_scale,  # can multiply 0.8 if the eye is too close?
+                eyes=torch.tensor([self.eyes_pos_list[i]], dtype=torch.float32) * eyepos_scale,
                 centers=torch.tensor([[0, 0, 0]], dtype=torch.float32),
                 ups=torch.tensor([[0, 0, 1]], dtype=torch.float32),
             )
 
-            self.register_buffer("_pre_matrix", self.projection_matrix @ _view_matrix)
+            self.register_buffer("_pre_matrix", self.projection_matrix @ _view_matrix)  # The final transformation matrix
             self.pre_matrix_list.append(self._pre_matrix)
+            
 
-    def forward(self, data, view_id=0, radius_list=[10]):
+    def forward(self, data, view_id=0, radius_list=[15]):
         if view_id >= self.num_views:
             return None
 
         _batch_size = data.size(0)
         _num_points = data.size(1)
-        _matrix = self.pre_matrix_list[view_id].expand(_batch_size * _num_points, 4, 4).to(data.device)
+        _matrix = self.pre_matrix_list[view_id].expand(_batch_size * _num_points, 4, 4).to(data.device) # originally was shape [1, 4, 4], expand to [B * N, 4, 4]
         _background = torch.zeros(_batch_size, 1, self.image_size, self.image_size, dtype=data.dtype, device=data.device)
-        _batch_inds = torch.arange(0, _batch_size, dtype=torch.int32, device=data.device)
-        _batch_inds = _batch_inds.unsqueeze(1).expand(_batch_size, _num_points).reshape(-1)
+        _batch_inds = torch.arange(0, _batch_size, dtype=torch.int32, device=data.device) # [B]
+        _batch_inds = _batch_inds.unsqueeze(1).expand(_batch_size, _num_points).reshape(-1)  # [B, 1] -> [B, N] -> [B*N]
 
         pcds = data.view(-1, 3)  # [bs* num_points, 3]
-        trans_pos = transform(_matrix, pcds)
+        trans_pos = transform(_matrix, pcds)    # [B*N, 3]
         pos_xs, pos_ys, pos_zs = trans_pos.split(dim=1, split_size=1)
+        # x, y as point pixel location
         pos_ijs = torch.cat([-pos_ys, pos_xs], dim=1)  # negate pos_ys because images row indices are from top to bottom
-        point_features = 1.0 - (pos_zs - pos_zs.min()) / (pos_zs.max() - pos_zs.min())  # npoints x 1, a one-channel point feature
+        # import matplotlib.pyplot as plt
+        # plt.scatter(pos_ijs[:, 0].cpu().numpy(), pos_ijs[:, 1].cpu().numpy())
+        # plt.show()
         # raise Exception("break")
+        # z as point feature
+        point_features = 1.0 - (pos_zs - pos_zs.min()) / (pos_zs.max() - pos_zs.min())  # npoints x 1, a one-channel point feature
         # depth_maps: [bs, 1, 256, 256]
         # depth_maps = (depth_maps - depth_maps.min()) / (depth_maps.max() - depth_maps.min())
         for radius in radius_list:
@@ -269,7 +286,7 @@ if __name__ == "__main__":
     ppcd = ppcd - ppcd.mean(dim=1, keepdim=True)
     ppcd = ppcd / ppcd.norm(dim=2, keepdim=True).max()
     # print(ppcd)
-    compute_depth_maps = ComputeDepthMaps(projection="perspective", eyepos_scale=1, image_size=256).float().cuda()
+    compute_depth_maps = ComputeDepthMaps(projection="perspective", eyepos_scale=2, image_size=256).float().cuda()
     for i in range(8):
         torch.cuda.empty_cache()
         depth_map = compute_depth_maps(ppcd, view_id=i).squeeze()
