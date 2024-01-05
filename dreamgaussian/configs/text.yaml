@@ -20,7 +20,7 @@ save_path: ???
 
 ### Training
 # use mvdream instead of sd 2.1
-mvdream: False
+mvdream: True
 # use imagedream
 imagedream: False
 # use stable-zero123 instead of zero123-xl
@@ -33,7 +33,7 @@ warmup_rgb_loss: True
 # training batch size per iter
 batch_size: 1
 # training iterations for stage 1
-iters: 500
+iters: 1000
 # whether to linearly anneal timestep
 anneal_timestep: True
 # training iterations for stage 2
@@ -72,8 +72,8 @@ opacity_lr: 0.05
 scaling_lr: 0.005
 rotation_lr: 0.005
 percent_dense: 0.01
-density_start_iter: 0
-density_end_iter: 3000
+density_start_iter: 50
+density_end_iter: 500
 densification_interval: 50
 opacity_reset_interval: 700
 densify_grad_threshold: 0.01

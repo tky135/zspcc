@@ -81,7 +81,7 @@ class GUI:
             self.renderer.initialize(self.opt.load)            
         else:
             # initialize gaussians to a blob
-            self.renderer.initialize(num_pts=self.opt.num_pts)
+            self.renderer.initialize(num_pts=self.opt.num_pts)      # Renderer initialize function
 
         if self.gui:
             dpg.create_context()
@@ -189,7 +189,9 @@ class GUI:
         starter.record()
 
         for _ in range(self.train_steps):
-
+            print(self.renderer.gaussians._opacity)
+            print(self.renderer.gaussians.condition_opacity)
+            print("--------------------------------------")
             self.step += 1
             step_ratio = min(1, self.step / self.opt.iters)
 
@@ -200,8 +202,8 @@ class GUI:
 
             ### known view
             if self.input_img_torch is not None and not self.opt.imagedream:
-                raise Exception("break")
-                cur_cam = self.fixed_cam
+                # raise Exception("break")
+                cur_cam = self.fixed_cam    # self.fixed_cam is the camera location of the provided image
                 out = self.renderer.render(cur_cam)
 
                 # rgb loss
@@ -232,7 +234,7 @@ class GUI:
                 hors.append(hor)
                 radii.append(radius)
 
-                pose = orbit_camera(self.opt.elevation + ver, hor, self.opt.radius + radius)
+                pose = orbit_camera(self.opt.elevation + ver, hor, self.opt.radius + radius)    # new extrinsic
                 poses.append(pose)
 
                 cur_cam = MiniCam(pose, render_resolution, render_resolution, self.cam.fovy, self.cam.fovx, self.cam.near, self.cam.far)
@@ -245,9 +247,8 @@ class GUI:
 
                 # enable mvdream training
                 if self.opt.mvdream or self.opt.imagedream:
-                    for view_i in range(1, 4):
-                        print(self.opt.elevation)
-                        raise Exception("break")
+                    for view_i in range(1, 4):  # render other 4 camera poses
+                        
                         pose_i = orbit_camera(self.opt.elevation + ver, hor + 90 * view_i, self.opt.radius + radius)
                         poses.append(pose_i)
 
@@ -284,8 +285,15 @@ class GUI:
             # densify and prune
             if self.step >= self.opt.density_start_iter and self.step <= self.opt.density_end_iter:
                 viewspace_point_tensor, visibility_filter, radii = out["viewspace_points"], out["visibility_filter"], out["radii"]
-                self.renderer.gaussians.max_radii2D[visibility_filter] = torch.max(self.renderer.gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                self.renderer.gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+                n_points = self.renderer.gaussians._xyz.shape[0]
+                viewspace_point_tensor_half = viewspace_point_tensor[:n_points]
+                viewspace_point_tensor_half.grad = viewspace_point_tensor.grad[:n_points]
+                visibility_filter_half = visibility_filter[:n_points]
+                radii_half = radii[:n_points]
+ 
+                value_tensor = torch.max(self.renderer.gaussians.max_radii2D[visibility_filter_half], radii_half[visibility_filter_half])
+                self.renderer.gaussians.max_radii2D[visibility_filter_half] = value_tensor
+                self.renderer.gaussians.add_densification_stats(viewspace_point_tensor_half, visibility_filter_half)
 
                 if self.step % self.opt.densification_interval == 0:
                     self.renderer.gaussians.densify_and_prune(self.opt.densify_grad_threshold, min_opacity=0.01, extent=4, max_screen_size=1)
