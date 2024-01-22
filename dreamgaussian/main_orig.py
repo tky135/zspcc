@@ -4,20 +4,71 @@ import time
 import tqdm
 import numpy as np
 import dearpygui.dearpygui as dpg
-
 import torch
+import chamfer_dist
+
 import torch.nn.functional as F
 
 import rembg
 
 from cam_utils import orbit_camera, OrbitCamera
-from gs_renderer import Renderer, MiniCam
-
+from gs_renderer_orig import Renderer, MiniCam, knn
+import matplotlib.pyplot as plt
 from grid_put import mipmap_linear_grid_put_2d
 from mesh import Mesh, safe_normalize
 
-
 COUNTER = 0
+
+#########################################################
+import open3d
+def pcd_to_ply(pcd, filename="../00.ply"):
+    ply = open3d.geometry.PointCloud()
+    ply.points = open3d.utility.Vector3dVector(pcd)
+    # save
+    open3d.io.write_point_cloud(filename, ply)
+
+hausdorff_loss = chamfer_dist.PatialChamferDistanceL2()
+
+ppcd = open3d.io.read_point_cloud("plane2.pcd")
+# normal estimation
+ppcd.estimate_normals(search_param=open3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+# open3d.visualization.draw_geometries([ppcd], point_show_normal=True)
+normal = np.asarray(ppcd.normals)
+ppcd = np.asarray(ppcd.points)
+
+num_pts, three = ppcd.shape
+ppcd = ppcd - ppcd.mean(axis=0)
+ppcd = ppcd / ppcd.max()
+pcd_to_ply(ppcd, "tky_orig.ply")
+tky_scale = 0.03
+ppcd_plus = ppcd + normal * tky_scale
+pcd_to_ply(ppcd_plus, "tky_plus.ply")
+ppcd_minus = ppcd - normal * tky_scale
+pcd_to_ply(ppcd_minus, "tky_minus.ply")
+# raise Exception("break")
+
+# tky_scale = 0.01
+
+ppcd = torch.tensor(np.asarray(ppcd)).float().cuda()
+ppcd.requires_grad = False
+
+ppcd_plus = torch.tensor(np.asarray(ppcd_plus)).float().cuda()
+ppcd_plus.requires_grad = False
+
+ppcd_minus = torch.tensor(np.asarray(ppcd_minus)).float().cuda()
+ppcd_minus.requires_grad = False
+
+normal = torch.tensor(np.asarray(normal)).float().cuda()
+normal.requires_grad = False
+
+
+
+# fig = plt.figure()
+# ax = fig.add_subplot(projection='3d')
+# ppcd = ppcd.detach().cpu().numpy()
+# ax.scatter(ppcd[:, 0], ppcd[:, 1], ppcd[:, 2])
+# plt.show()
+#########################################################
 class GUI:
     def __init__(self, opt):
         self.opt = opt  # shared with the trainer's opt to support in-place modification of rendering parameters.
@@ -25,10 +76,6 @@ class GUI:
         self.W = opt.W
         self.H = opt.H
         self.cam = OrbitCamera(opt.W, opt.H, r=opt.radius, fovy=opt.fovy)
-
-        # print(self.W)
-        # print(self.H)
-        # print(opt)
 
         self.mode = "image"
         self.seed = "random"
@@ -83,7 +130,7 @@ class GUI:
             self.renderer.initialize(self.opt.load)            
         else:
             # initialize gaussians to a blob
-            self.renderer.initialize(num_pts=self.opt.num_pts)      # Renderer initialize function
+            self.renderer.initialize(num_pts=self.opt.num_pts)
 
         if self.gui:
             dpg.create_context()
@@ -185,6 +232,7 @@ class GUI:
             if self.enable_zero123:
                 self.guidance_zero123.get_img_embeds(self.input_img_torch)
 
+
     def train_step(self):
         global COUNTER
         starter = torch.cuda.Event(enable_timing=True)
@@ -192,6 +240,7 @@ class GUI:
         starter.record()
 
         for _ in range(self.train_steps):
+
             self.step += 1
             step_ratio = min(1, self.step / self.opt.iters)
 
@@ -199,11 +248,160 @@ class GUI:
             self.renderer.gaussians.update_learning_rate(self.step)
 
             loss = 0
+            # raise Exception("reabk")
+            ############################
+            # query_xyz = torch.zeros([2, 3], dtype=torch.float32, device="cuda")
+            import numpy as np
+            from matplotlib import pyplot as plt
+
+            # X, Y, Z = np.mgrid[-1:1:20j, -1:1:20j, -1:1:20j]
+            
+            # query_xyz = torch.from_numpy(np.stack([X, Y, Z], axis=-1)).to("cuda")
+            # query_xyz = query_xyz.view(-1, 3)
+            # query_density = self.renderer.gaussians.get_location_density(query_xyz)
+            # query_density = query_density.view(20, 20, 20).detach().cpu().numpy()
+
+            # fig = plt.figure()
+            # ax = fig.add_subplot(111, projection='3d')
+            # mask = query_density > 0.1
+            # X = X[mask]
+            # Y = Y[mask]
+            # Z = Z[mask]
+            # query_density = query_density[mask]
+            # scat = ax.scatter(X, Y, Z, c=query_density, alpha=0.3)
+            # fig.colorbar(scat, shrink=0.5, aspect=5)
+
+            # if not os.path.exists("images_grid/"):
+            #     os.mkdir("images_grid")
+            # if COUNTER % 100 != 1:
+            #     plt.savefig("images_grid/B_%d.png" % COUNTER)
+            #     plt.close()
+            # else:
+            #     plt.show()
+
+            ############################
+
+            # query_xyz = ppcd
+            # query_density = self.renderer.gaussians.get_location_density(query_xyz)
+            # print("query_density_loss: ", F.mse_loss(query_density, torch.ones_like(query_density) * 0.5).item())
+            # loss += 10000 * F.mse_loss(query_density, torch.ones_like(query_density) * 0.5)
+            # query_density = query_density.detach().cpu().numpy()
+            # X, Y, Z = query_xyz[:, 0].cpu().numpy(), query_xyz[:, 1].cpu().numpy(), query_xyz[:, 2].cpu().numpy()
+
+            # fig = plt.figure()
+            # ax = fig.add_subplot(111, projection='3d')
+            # # mask = query_density > 0.1
+            # # X = X[mask]
+            # # Y = Y[mask]
+            # # Z = Z[mask]
+            # # query_density = query_density[mask]
+            # scat = ax.scatter(X, Y, Z, c=query_density, alpha=0.3)
+            # fig.colorbar(scat, shrink=0.5, aspect=5)
+
+            # if not os.path.exists("images_grid/"):
+            #     os.mkdir("images_grid")
+            # # if COUNTER % 100 != 1:
+            # plt.savefig("images_grid/B_%d.png" % COUNTER)
+            # plt.close()
+            # else:
+            #     plt.show()
+            ############################
+            # random scale
+            # tky_scale = torch.rand(1, device="cuda") * 0.001 + 0.03
+            # ppcd_plus = ppcd + normal * tky_scale
+            # ppcd_minus = ppcd - normal * tky_scale
+
+            # query_density_plus = self.renderer.gaussians.get_location_density(ppcd_plus)
+            # query_density_minus = self.renderer.gaussians.get_location_density(ppcd_minus)
+            # density_loss = query_density_plus ** 2 + query_density_minus ** 2
+            # loss += 1e5 * density_loss.mean()
+            # print("query_density_loss: ", density_loss.mean().item())
+
+            # X1, Y1, Z1 = ppcd_plus[:, 0].cpu().numpy(), ppcd_plus[:, 1].cpu().numpy(), ppcd_plus[:, 2].cpu().numpy()
+            # X2, Y2, Z2 = ppcd_minus[:, 0].cpu().numpy(), ppcd_minus[:, 1].cpu().numpy(), ppcd_minus[:, 2].cpu().numpy()
+            
+            # fig = plt.figure()
+            # ax = fig.add_subplot(211, projection='3d')
+            # scat = ax.scatter(X1, Y1, Z1, c=query_density_plus.detach().cpu().numpy(), alpha=0.3)
+            # ax.set_title("plus")
+            # fig.colorbar(scat, shrink=0.5, aspect=5)
+            # ax = fig.add_subplot(212, projection='3d')
+            # scat = ax.scatter(X2, Y2, Z2, c=query_density_minus.detach().cpu().numpy(), alpha=0.3)
+            # ax.set_title("minus")
+            # fig.colorbar(scat, shrink=0.5, aspect=5)
+
+            # if not os.path.exists("images_grid/"):
+            #     os.mkdir("images_grid")
+            # # plt.show()
+            # plt.savefig("images_grid/B_%d.png" % COUNTER)
+            # plt.close()
+
+
+            ############################
+
+            # scale regularization
+            # print(self.renderer.gaussians.get_scaling)
+            # self.renderer.gaussians._scaling[:, 0] *= -1e20
+            scale = self.renderer.gaussians.get_scaling
+            # drive min scale to zero
+            min_scale = torch.min(scale, dim=1)
+            scale_loss = min_scale.values
+            # loss += 1e5 * scale_loss.mean()
+            # print("min_scale_loss: ", scale_loss.mean().item())
+            # print(self.renderer.gaussians.get_scaling)
+            # print("####################")
+            
+            # loss += 100000000 * F.mse_loss(min_scale.values, torch.zeros_like(min_scale.values))
+            # print("min_scale_loss: ", F.mse_loss(min_scale.values, torch.zeros_like(min_scale.values)).item())
+
+            ############################
+
+            # hausloss = hausdorff_loss(ppcd.unsqueeze(0), self.renderer.gaussians._xyz.unsqueeze(0))
+            # # hausloss = hausdorff_loss(self.renderer.gaussians._xyz.unsqueeze(0), ppcd.unsqueeze(0))
+            # print("hausloss: ", hausloss.item())
+            # loss += 1e6 * hausloss
+            # raise Exception("break")
+
+            ############################
+            ### normal consistency prior
+            # normals = self.renderer.gaussians.get_normals()
+
+            # # get normal from o3d
+            # cpu_xyz = self.renderer.gaussians._xyz.detach().cpu().numpy()
+            # pcd = open3d.geometry.PointCloud()
+            # pcd.points = open3d.utility.Vector3dVector(cpu_xyz)
+            # # normal estimation
+            # pcd.estimate_normals(search_param=open3d.geometry.KDTreeSearchParamHybrid(radius=0.05, max_nn=10))
+            # o3d_normals = np.asarray(pcd.normals)
+            # o3d_normals = torch.from_numpy(o3d_normals).float().cuda()
+            # o3d_normals.requires_grad = False
+            # # print("normal shape", normals.shape, o3d_normals.shape)
+            # normal_loss = (normals * o3d_normals)**2
+            # normal_loss = 1 - normal_loss.mean()
+            # print(normal_loss.item())
+            # loss += 1e4 * normal_loss
+
+
+            ############################
+            ### normal consistency prior 2 (knn)
+
+
+            ############################
+            ### repulsion loss (should be repulsion and attraction)
+            xyz = self.renderer.gaussians._xyz
+            _, distances = knn(xyz, xyz, k=5)
+            # loss += 1e4 * distances.mean()
+            loss += 1e4 * (-distances).mean()
+            print("repulsion loss: ", distances.mean().item())
+
+
+
+            
+
 
             ### known view
             if self.input_img_torch is not None and not self.opt.imagedream:
-                # raise Exception("break")
-                cur_cam = self.fixed_cam    # self.fixed_cam is the camera location of the provided image
+                cur_cam = self.fixed_cam
                 out = self.renderer.render(cur_cam)
 
                 # rgb loss
@@ -234,7 +432,7 @@ class GUI:
                 hors.append(hor)
                 radii.append(radius)
 
-                pose = orbit_camera(self.opt.elevation + ver, hor, self.opt.radius + radius)    # new extrinsic
+                pose = orbit_camera(self.opt.elevation + ver, hor, self.opt.radius + radius)
                 poses.append(pose)
 
                 cur_cam = MiniCam(pose, render_resolution, render_resolution, self.cam.fovy, self.cam.fovx, self.cam.near, self.cam.far)
@@ -247,8 +445,7 @@ class GUI:
 
                 # enable mvdream training
                 if self.opt.mvdream or self.opt.imagedream:
-                    for view_i in range(1, 4):  # render other 4 camera poses
-                        
+                    for view_i in range(1, 4):
                         pose_i = orbit_camera(self.opt.elevation + ver, hor + 90 * view_i, self.opt.radius + radius)
                         poses.append(pose_i)
 
@@ -261,7 +458,7 @@ class GUI:
                         images.append(image)
                     
             images = torch.cat(images, dim=0)
-            
+
             # save images
             import torchvision
             if not os.path.exists("images/"):
@@ -287,61 +484,40 @@ class GUI:
 
             if self.enable_zero123:
                 loss = loss + self.opt.lambda_zero123 * self.guidance_zero123.train_step(images, vers, hors, radii, step_ratio=step_ratio if self.opt.anneal_timestep else None, default_elevation=self.opt.elevation)
-            
-            print(COUNTER, loss.item())
+
             # optimize step
+            print(loss.item())
             loss.backward()
-            # print("xyz: ")
-            # print(self.renderer.gaussians._xyz[0])
-            # print("------------------")
-            # print("condition_xyz: ")
-            # print(self.renderer.gaussians.condition_xyz[0])
-            # print("------------------")
-            # print("opacity: ")
-            # print(self.renderer.gaussians._opacity[0])
-            # print("------------------")
-            # print("scaling: ")
-            # print(self.renderer.gaussians._scaling[0])
-            # print("------------------")
-            # print("feature ")
-            # print(self.renderer.gaussians._features_dc[0])
-            # print("------------------")
             self.optimizer.step()
-            # print("after step: ")
-            # print("xyz: ")
-            # print(self.renderer.gaussians._xyz[0])
-            # print("------------------")
-            # print("condition_xyz: ")
-            # print(self.renderer.gaussians.condition_xyz[0])
-            # print("------------------")
-            # print("opacity: ")
-            # print(self.renderer.gaussians._opacity[0])
-            # print("------------------")
-            # print("scaling: ")
-            # print(self.renderer.gaussians._scaling[0])
-            # print("------------------")
-            # print("feature ")
-            # print(self.renderer.gaussians._features_dc[0])
-            # print("------------------")
             self.optimizer.zero_grad()
 
+            # print("scaling lr", self.renderer.gaussians.optimizer.param_groups[0]['lr'])
             # densify and prune
-            # if self.step >= self.opt.density_start_iter and self.step <= self.opt.density_end_iter:
-            if self.step >= self.opt.density_start_iter and self.step <= self.opt.density_end_iter and self.renderer.gaussians._xyz.shape[0] + self.renderer.gaussians.condition_xyz.shape[0] < 4096:
+            # if self.step >= self.opt.density_start_iter and self.step <= self.opt.density_end_iter and self.renderer.gaussians.get_xyz.shape[0] < 4096:
+            if self.step >= self.opt.density_start_iter and self.step <= self.opt.density_end_iter:
                 viewspace_point_tensor, visibility_filter, radii = out["viewspace_points"], out["visibility_filter"], out["radii"]
-                n_points = self.renderer.gaussians._xyz.shape[0]
-                viewspace_point_tensor_half = viewspace_point_tensor[:n_points]
-                viewspace_point_tensor_half.grad = viewspace_point_tensor.grad[:n_points]
-                visibility_filter_half = visibility_filter[:n_points]
-                radii_half = radii[:n_points]
- 
-                value_tensor = torch.max(self.renderer.gaussians.max_radii2D[visibility_filter_half], radii_half[visibility_filter_half])
-                self.renderer.gaussians.max_radii2D[visibility_filter_half] = value_tensor
-                self.renderer.gaussians.add_densification_stats(viewspace_point_tensor_half, visibility_filter_half)
+                self.renderer.gaussians.max_radii2D[visibility_filter] = torch.max(self.renderer.gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+                self.renderer.gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
                 if self.step % self.opt.densification_interval == 0:
-                    self.renderer.gaussians.densify_and_prune(self.opt.densify_grad_threshold, min_opacity=0.01, extent=4, max_screen_size=1)
-                
+                    print("number of points before: ")
+                    print(self.renderer.gaussians.get_xyz.shape[0])
+                    if self.renderer.gaussians.get_xyz.shape[0] < 4000:
+                        self.renderer.gaussians.densify_and_prune(self.opt.densify_grad_threshold, min_opacity=0.01, extent=4, max_screen_size=0)
+                    else:
+                        self.renderer.gaussians.prune(min_opacity=0.01, extent=4, max_screen_size=0)
+                    print("number of points after: ")
+                    print(self.renderer.gaussians.get_xyz.shape[0])
+
+
+                    # print("scaling")
+                    # for i in range(self.renderer.gaussians.get_scaling.shape[0]):
+                    #     print(self.renderer.gaussians.get_scaling[i])
+                    
+                    # for group in self.optimizer.param_groups:
+                    #     if group['name'] == "scaling":
+                    #         print("scaling lr", group['lr'])
+                    # print("####################")
                 if self.step % self.opt.opacity_reset_interval == 0:
                     self.renderer.gaussians.reset_opacity()
 
@@ -950,8 +1126,8 @@ class GUI:
             self.prepare_train()
             for i in tqdm.trange(iters):
                 self.train_step()
-            # do a last prune
-            self.renderer.gaussians.prune(min_opacity=0.01, extent=1, max_screen_size=1)
+            # don't do a last prune
+            # self.renderer.gaussians.prune(min_opacity=0.01, extent=1, max_screen_size=1)
         # save
         self.save_model(mode='model')
         self.save_model(mode='geo+tex')
