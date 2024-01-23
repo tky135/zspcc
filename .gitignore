@@ -3,3 +3,5 @@ __pycache__
 *.pcd
 __*
 test*.png
+tky_*
+*.tky_

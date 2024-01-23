@@ -356,10 +356,10 @@ class GUI:
 
             ############################
 
-            # hausloss = hausdorff_loss(ppcd.unsqueeze(0), self.renderer.gaussians._xyz.unsqueeze(0))
-            # # hausloss = hausdorff_loss(self.renderer.gaussians._xyz.unsqueeze(0), ppcd.unsqueeze(0))
-            # print("hausloss: ", hausloss.item())
-            # loss += 1e6 * hausloss
+            hausloss = hausdorff_loss(ppcd.unsqueeze(0), self.renderer.gaussians._xyz.unsqueeze(0))
+            # hausloss = hausdorff_loss(self.renderer.gaussians._xyz.unsqueeze(0), ppcd.unsqueeze(0))
+            print("hausloss: ", hausloss.item())
+            loss += 1e6 * hausloss
             # raise Exception("break")
 
             ############################
@@ -388,11 +388,11 @@ class GUI:
 
             ############################
             ### repulsion loss (should be repulsion and attraction)
-            xyz = self.renderer.gaussians._xyz
-            _, distances = knn(xyz, xyz, k=5)
-            # loss += 1e4 * distances.mean()
-            loss += 1e4 * (-distances).mean()
-            print("repulsion loss: ", distances.mean().item())
+            # xyz = self.renderer.gaussians._xyz
+            # _, distances = knn(xyz, xyz, k=5)
+            # # loss += 1e4 * distances.mean()
+            # loss += 1e4 * (-distances).mean()
+            # print("repulsion loss: ", distances.mean().item())
 
 
 
@@ -506,6 +506,8 @@ class GUI:
                         self.renderer.gaussians.densify_and_prune(self.opt.densify_grad_threshold, min_opacity=0.01, extent=4, max_screen_size=0)
                     else:
                         self.renderer.gaussians.prune(min_opacity=0.01, extent=4, max_screen_size=0)
+                    # reset opacity
+                    # self.renderer.gaussians.reset_opacity1()
                     print("number of points after: ")
                     print(self.renderer.gaussians.get_xyz.shape[0])
 
@@ -518,8 +520,9 @@ class GUI:
                     #     if group['name'] == "scaling":
                     #         print("scaling lr", group['lr'])
                     # print("####################")
-                if self.step % self.opt.opacity_reset_interval == 0:
-                    self.renderer.gaussians.reset_opacity()
+                # if self.step % self.opt.opacity_reset_interval == 0:
+                #     self.renderer.gaussians.reset_opacity()
+            # self.renderer.gaussians.reset_opacity2()
 
         ender.record()
         torch.cuda.synchronize()
