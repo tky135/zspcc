@@ -8,9 +8,9 @@ import torch
 import chamfer_dist
 
 import torch.nn.functional as F
-
+# import torchvision.utils
 import rembg
-
+from depth import PointCloud, perspective
 from cam_utils import orbit_camera, OrbitCamera
 from gs_renderer_orig import Renderer, MiniCam, knn
 import matplotlib.pyplot as plt
@@ -160,6 +160,7 @@ class GUI:
 
         self.step = 0
 
+        self.depth_renderer = PointCloud()
         # setup training
         self.renderer.gaussians.training_setup(self.opt)
         # do not do progressive sh-level
@@ -356,10 +357,10 @@ class GUI:
 
             ############################
 
-            hausloss = hausdorff_loss(ppcd.unsqueeze(0), self.renderer.gaussians._xyz.unsqueeze(0))
-            # hausloss = hausdorff_loss(self.renderer.gaussians._xyz.unsqueeze(0), ppcd.unsqueeze(0))
-            print("hausloss: ", hausloss.item())
-            loss += 1e6 * hausloss
+            # hausloss = hausdorff_loss(ppcd.unsqueeze(0), self.renderer.gaussians._xyz.unsqueeze(0))
+            # # hausloss = hausdorff_loss(self.renderer.gaussians._xyz.unsqueeze(0), ppcd.unsqueeze(0))
+            # print("hausloss: ", hausloss.item())
+            # loss += 1e6 * hausloss
             # raise Exception("break")
 
             ############################
@@ -436,11 +437,19 @@ class GUI:
                 poses.append(pose)
 
                 cur_cam = MiniCam(pose, render_resolution, render_resolution, self.cam.fovy, self.cam.fovx, self.cam.near, self.cam.far)
+                
+                out_depth = self.depth_renderer(cur_cam.world_view_transform.transpose(0, 1), cur_cam.projection_matrix.transpose(0, 1))
+                # repeat in RGB channels
+                image = out_depth.repeat(1, 3, 1, 1)
+                # import torchvision
+                # # torchvision.utils.save_image(out_depth.squeeze(), "__temp__/tky135.png")
+                #########################################################
+                # bg_color = torch.tensor([1, 1, 1] if np.random.rand() > self.opt.invert_bg_prob else [0, 0, 0], dtype=torch.float32, device="cuda")
+                # out = self.renderer.render(cur_cam, bg_color=bg_color)
 
-                bg_color = torch.tensor([1, 1, 1] if np.random.rand() > self.opt.invert_bg_prob else [0, 0, 0], dtype=torch.float32, device="cuda")
-                out = self.renderer.render(cur_cam, bg_color=bg_color)
-
-                image = out["image"].unsqueeze(0) # [1, 3, H, W] in [0, 1]
+                # image = out["image"].unsqueeze(0) # [1, 3, H, W] in [0, 1]
+                #########################################################
+                
                 images.append(image)
 
                 # enable mvdream training
@@ -450,11 +459,21 @@ class GUI:
                         poses.append(pose_i)
 
                         cur_cam_i = MiniCam(pose_i, render_resolution, render_resolution, self.cam.fovy, self.cam.fovx, self.cam.near, self.cam.far)
-
+                        
                         # bg_color = torch.tensor([0.5, 0.5, 0.5], dtype=torch.float32, device="cuda")
-                        out_i = self.renderer.render(cur_cam_i, bg_color=bg_color)
 
-                        image = out_i["image"].unsqueeze(0) # [1, 3, H, W] in [0, 1]
+                        # cur_cam_i contains the view matrix and projection matrix
+                        out_depth = self.depth_renderer(cur_cam_i.world_view_transform.transpose(0, 1), cur_cam_i.projection_matrix.transpose(0, 1))
+                        # repeat in RGB channels
+                        image = out_depth.repeat(1, 3, 1, 1)
+                        
+                        #########################################################
+                        # out_i = self.renderer.render(cur_cam_i, bg_color=bg_color)
+
+
+                        # image = out_i["image"].unsqueeze(0) # [1, 3, H, W] in [0, 1]
+                        #########################################################
+
                         images.append(image)
                     
             images = torch.cat(images, dim=0)
@@ -488,40 +507,44 @@ class GUI:
             # optimize step
             print(loss.item())
             loss.backward()
-            self.optimizer.step()
-            self.optimizer.zero_grad()
+            # self.optimizer.step()
+            # self.optimizer.zero_grad()
+            self.depth_renderer.optimizer.step()
+            self.depth_renderer.optimizer.zero_grad()
 
             # print("scaling lr", self.renderer.gaussians.optimizer.param_groups[0]['lr'])
             # densify and prune
             # if self.step >= self.opt.density_start_iter and self.step <= self.opt.density_end_iter and self.renderer.gaussians.get_xyz.shape[0] < 4096:
-            if self.step >= self.opt.density_start_iter and self.step <= self.opt.density_end_iter:
-                viewspace_point_tensor, visibility_filter, radii = out["viewspace_points"], out["visibility_filter"], out["radii"]
-                self.renderer.gaussians.max_radii2D[visibility_filter] = torch.max(self.renderer.gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                self.renderer.gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
-                if self.step % self.opt.densification_interval == 0:
-                    print("number of points before: ")
-                    print(self.renderer.gaussians.get_xyz.shape[0])
-                    if self.renderer.gaussians.get_xyz.shape[0] < 4000:
-                        self.renderer.gaussians.densify_and_prune(self.opt.densify_grad_threshold, min_opacity=0.01, extent=4, max_screen_size=0)
-                    else:
-                        self.renderer.gaussians.prune(min_opacity=0.01, extent=4, max_screen_size=0)
-                    # reset opacity
-                    # self.renderer.gaussians.reset_opacity1()
-                    print("number of points after: ")
-                    print(self.renderer.gaussians.get_xyz.shape[0])
+            ### disable densification for now
+            # if self.step >= self.opt.density_start_iter and self.step <= self.opt.density_end_iter:
+            #     viewspace_point_tensor, visibility_filter, radii = out["viewspace_points"], out["visibility_filter"], out["radii"]
+            #     self.renderer.gaussians.max_radii2D[visibility_filter] = torch.max(self.renderer.gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+            #     self.renderer.gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+
+            #     if self.step % self.opt.densification_interval == 0:
+            #         print("number of points before: ")
+            #         print(self.renderer.gaussians.get_xyz.shape[0])
+            #         if self.renderer.gaussians.get_xyz.shape[0] < 4000:
+            #             self.renderer.gaussians.densify_and_prune(self.opt.densify_grad_threshold, min_opacity=0.01, extent=4, max_screen_size=0)
+            #         else:
+            #             self.renderer.gaussians.prune(min_opacity=0.01, extent=4, max_screen_size=0)
+            #         # reset opacity
+            #         # self.renderer.gaussians.reset_opacity1()
+            #         print("number of points after: ")
+            #         print(self.renderer.gaussians.get_xyz.shape[0])
 
 
-                    # print("scaling")
-                    # for i in range(self.renderer.gaussians.get_scaling.shape[0]):
-                    #     print(self.renderer.gaussians.get_scaling[i])
+            #         # print("scaling")
+            #         # for i in range(self.renderer.gaussians.get_scaling.shape[0]):
+            #         #     print(self.renderer.gaussians.get_scaling[i])
                     
-                    # for group in self.optimizer.param_groups:
-                    #     if group['name'] == "scaling":
-                    #         print("scaling lr", group['lr'])
-                    # print("####################")
-                # if self.step % self.opt.opacity_reset_interval == 0:
-                #     self.renderer.gaussians.reset_opacity()
+            #         # for group in self.optimizer.param_groups:
+            #         #     if group['name'] == "scaling":
+            #         #         print("scaling lr", group['lr'])
+            #         # print("####################")
+            #     # if self.step % self.opt.opacity_reset_interval == 0:
+            #     #     self.renderer.gaussians.reset_opacity()
             # self.renderer.gaussians.reset_opacity2()
 
         ender.record()

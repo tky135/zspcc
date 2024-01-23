@@ -4,7 +4,8 @@
 # differentiable point cloud rendering
 import torch
 from p2i_op import p2i
-
+import open3d
+import numpy as np
 def normalize(x, dim):
     return x / torch.max(x.norm(None, dim=dim, keepdim=True), torch.tensor(1e-6, dtype=x.dtype, device=x.device))
 
@@ -269,6 +270,54 @@ class ComputeDepthMaps(torch.nn.Module):
         return depth_maps
 
 
+class PointCloud(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.compute_depth_maps = ComputeDepthMaps(projection="perspective", eyepos_scale=2, image_size=256).float().cuda()
+        self.radius = 5
+        # read point cloud
+        ppcd = open3d.io.read_point_cloud("00.pcd")
+        ppcd = np.asarray(ppcd.points)
+        ppcd = torch.from_numpy(ppcd).float().cuda()   # make sure point cloud must be sent to gpu in order to use p2i_op kernel
+
+        # normalize the point cloud
+        ppcd = ppcd - ppcd.mean(dim=0, keepdim=True)
+        ppcd = ppcd / ppcd.norm(dim=1, keepdim=True).max()
+        self.fixed_pcd = ppcd.clone().detach()
+        self.pcd = torch.nn.Parameter(ppcd.requires_grad_(True))
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=1e-2, eps=1e-15)
+    def forward(self, view_matrix=torch.zeros((4, 4), device="cuda"), projection_matrix=torch.zeros((4, 4), device="cuda")):
+        view_matrix = view_matrix.float().cuda()
+        projection_matrix = projection_matrix.float().cuda()
+        transform_matrix = projection_matrix @ view_matrix
+        background = torch.zeros(1, 1, 256, 256, dtype=torch.float32, device=self.pcd.device)
+        points_2d = transform(transform_matrix, torch.cat([self.pcd, self.fixed_pcd], dim=0))
+        pos_xs, pos_ys, pos_zs = points_2d.split(dim=1, split_size=1)
+        pos_ijs = torch.cat([pos_ys, pos_xs], dim=1)
+        point_features = 1.0 - (pos_zs - pos_zs.min()) / (pos_zs.max() - pos_zs.min())
+        img_2d = p2i(
+            pos_ijs,
+            point_features,
+            torch.zeros(pos_ijs.shape[0], dtype=torch.int32, device=self.pcd.device),
+            background,
+            kernel_radius=self.radius,
+            kernel_kind_str="cos",
+            reduce="max",
+        )
+        
+        return img_2d
+    def save_ply(self):
+        pcd = open3d.geometry.PointCloud()
+        pcd.points = open3d.utility.Vector3dVector(self.pcd.cpu().detach().numpy())
+        open3d.io.write_point_cloud("00.ply", pcd)
+
+
+        
+
+        
+        
+    
+
 if __name__ == "__main__":
     import os
     import numpy as np
@@ -278,19 +327,28 @@ if __name__ == "__main__":
 
     if not os.path.exists("__temp__"):
         os.mkdir("__temp__")
-    ppcd = open3d.io.read_point_cloud("00.pcd")
-    ppcd = np.asarray(ppcd.points)
-    ppcd = torch.from_numpy(ppcd).unsqueeze(0).float().cuda()   # make sure point cloud must be sent to gpu in order to use p2i_op kernel
+    model = PointCloud()
+
+    eye_pos = torch.tensor([[-1, -1, -1]], dtype=torch.float32, device="cuda")
+    view_matrix = look_at(
+                eyes=torch.tensor([[-1, -1, -1]], dtype=torch.float32),
+                centers=torch.tensor([[0, 0, 0]], dtype=torch.float32),
+                ups=torch.tensor([[0, 0, 1]], dtype=torch.float32),
+            )
+    projection_matrix = perspective(
+                fovy=torch.tensor([torch.pi / 4], dtype=torch.float32),
+                aspect=torch.tensor([1.0], dtype=torch.float32),
+                z_near=torch.tensor([0.1], dtype=torch.float32),
+                z_far=torch.tensor([10.0], dtype=torch.float32),
+            )
     
-    # normalize the point cloud
-    ppcd = ppcd - ppcd.mean(dim=1, keepdim=True)
-    ppcd = ppcd / ppcd.norm(dim=2, keepdim=True).max()
-    # print(ppcd)
-    compute_depth_maps = ComputeDepthMaps(projection="perspective", eyepos_scale=2, image_size=256).float().cuda()
-    for i in range(8):
-        torch.cuda.empty_cache()
-        depth_map = compute_depth_maps(ppcd, view_id=i).squeeze()
-        print(torch.sum(depth_map))
-        print(depth_map)
-        print(depth_map.shape)
-        torchvision.utils.save_image(depth_map, f"__temp__/depth_map_{i}.jpg", pad_value=1)
+
+    depth_map = model(view_matrix, projection_matrix).squeeze()
+    torchvision.utils.save_image(depth_map, "__temp__/tky.png", pad_value=1)
+    # for i in range(8):
+    #     torch.cuda.empty_cache()
+    #     depth_map = model()
+    #     print(torch.sum(depth_map))
+    #     print(depth_map)
+    #     print(depth_map.shape)
+    #     torchvision.utils.save_image(depth_map, f"__temp__/depth_map_{i}.jpg", pad_value=1)

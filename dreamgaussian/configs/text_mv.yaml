@@ -2,7 +2,7 @@
 # input rgba image path (default to None, can be load in GUI too)
 input: 
 # input text prompt (default to None, can be input in GUI too)
-prompt:
+prompt: depth map of a point cloud
 negative_prompt: "ugly, bad anatomy, blurry, pixelated obscure, unnatural colors, poor lighting, dull, and unclear, cropped, lowres, low quality, artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, bad proportions"
 # input mesh for stage 2 (auto-search from stage 1 output path if None)
 mesh:
